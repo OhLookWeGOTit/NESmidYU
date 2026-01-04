@@ -12,6 +12,7 @@ public:
     int execute_cycle();
     std::string get_status() const;
     uint16_t get_program_counter() const noexcept { return program_counter_; }
+    void trigger_nmi();
 
 private:
     const MemoryMap* memory_;

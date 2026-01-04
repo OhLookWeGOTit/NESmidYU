@@ -491,3 +491,12 @@ std::string Processor6502::state() const {
       << " P=" << std::setw(2) << static_cast<int>(status_flags_);
     return o.str();
 }
+
+void CPU6502::trigger_nmi() {
+    push(static_cast<uint8_t>((pc_ >> 8) & 0x00FF));
+    push(static_cast<uint8_t>(pc_ & 0x00FF));
+    push(status_ | B | U);
+    SetFlag(I, true);
+    pc_ = static_cast<uint16_t>(read(0xFFFA) | (read(0xFFFB) << 8));
+    cycles_ += 7;
+}
