@@ -24,4 +24,8 @@ private:
     std::vector<uint8_t> program_data_;
     std::vector<uint8_t> graphic_data_;
 };
+
+class ROM {
+    // ROM class implementation
+};
 }

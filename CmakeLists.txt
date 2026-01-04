@@ -9,6 +9,11 @@ set(SOURCES
     src/visual.cpp
     src/audio.cpp
     src/emulator.cpp
+    # src/vulkan_renderer.cpp  # Comment out if Vulkan not available
 )
 include_directories(include)
+# find_package(Vulkan)  # Comment out if Vulkan not available
+# if(Vulkan_FOUND)
+#     target_link_libraries(nesemu Vulkan::Vulkan)
+# endif()
 add_executable(nesemu ${SOURCES})

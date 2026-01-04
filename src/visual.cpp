@@ -2,10 +2,11 @@
 #include "nes/cpu.h"
 #include <stdexcept>
 #include <algorithm>
+#include <sstream>
 
 using namespace nes;
 
-const std::array<std::array<uint8_t,3>, 64> PPU::nes_palette_ = {{{
+const std::array<std::array<uint8_t,3>, 64> PPU::nes_palette_ = {{{{
     {{124,124,124}},{{0,0,252}},{{0,0,188}},{{68,40,188}},{{148,0,132}},{{168,0,32}},{{168,16,0}},{{136,20,0}},
     {{80,48,0}},{{0,120,0}},{{0,104,0}},{{0,88,0}},{{0,64,88}},{{0,0,0}},{{0,0,0}},{{0,0,0}},
     {{188,188,188}},{{0,120,248}},{{0,88,248}},{{104,68,252}},{{216,0,204}},{{228,0,88}},{{248,56,0}},{{228,92,16}},
@@ -19,7 +20,8 @@ const std::array<std::array<uint8_t,3>, 64> PPU::nes_palette_ = {{{
 PPU::PPU(const ROM* rom, CPU6502* cpu) : rom_(rom), cpu_(cpu), chr_ram_(), has_chr_rom_(!rom_->chr().empty()), vram_{}, palette_{}, oam_{}, mirroring_(rom_->header().mirroring),
     ppuctrl_(0), ppumask_(0), ppustatus_(0), oamaddr_(0), ppuscroll_(0), ppuaddr_(0), ppudata_(0), vram_addr_(0), temp_addr_(0), fine_x_(0), write_toggle_(false),
     scanline_(-1), cycle_(0), scroll_x_(0), scroll_y_(0), nametable_base_(0), nmi_pending_(false),
-    coarse_x_(0), coarse_y_(0), fine_y_(0), sprite_zero_hit_(false), sprite_overflow_(false), scanline_pixels_{}, scanline_palettes_{}, sprite_buffer_() {
+    coarse_x_(0), coarse_y_(0), fine_y_(0), sprite_overflow_(false), sprite_zero_hit_(false), scanline_pixels_{}, scanline_palettes_{}, sprite_buffer_(),
+    secondary_oam_{}, sprite_count_(0), oam_addr_secondary_(0), show_bg_(true), show_sprites_(true), bg_left_clip_(false), sprite_left_clip_(false), frame_buffer_(256 * 240 * 3, 0) {
     if (!has_chr_rom_) chr_ram_.assign(8 * 1024, 0);
     for (size_t i = 0; i < palette_.size(); ++i) palette_[i] = static_cast<uint8_t>(i % 64);
 }
@@ -28,7 +30,7 @@ uint8_t PPU::read_register(uint8_t reg) {
     switch (reg) {
         case 0: return ppuctrl_;
         case 1: return ppumask_;
-        case 2: { uint8_t status = ppustatus_; ppustatus_ &= ~0x80; write_toggle_ = false; return status; }
+        case 2: { uint8_t status = ppustatus_ | (sprite_overflow_ ? 0x20 : 0) | (sprite_zero_hit_ ? 0x40 : 0); ppustatus_ &= ~0x80; write_toggle_ = false; return status; }
         case 3: return oamaddr_;
         case 4: return oam_[oamaddr_];
         case 5: return ppuscroll_;
@@ -45,7 +47,13 @@ uint8_t PPU::read_register(uint8_t reg) {
 void PPU::write_register(uint8_t reg, uint8_t value) {
     switch (reg) {
         case 0: ppuctrl_ = value; temp_addr_ = (temp_addr_ & 0xF3FF) | ((value & 0x03) << 10); nametable_base_ = (value & 0x03) * 0x0400; break;
-        case 1: ppumask_ = value; break;
+        case 1: 
+            ppumask_ = value; 
+            show_bg_ = (value & 0x08) != 0;
+            show_sprites_ = (value & 0x10) != 0;
+            bg_left_clip_ = (value & 0x02) != 0;
+            sprite_left_clip_ = (value & 0x04) != 0;
+            break;
         case 3: oamaddr_ = value; break;
         case 4: oam_[oamaddr_++] = value; break;
         case 5: {
@@ -90,6 +98,127 @@ void PPU::write_chr(uint16_t addr, uint8_t value) {
 
 size_t PPU::chr_size() const noexcept { return has_chr_rom_ ? rom_->chr().size() : chr_ram_.size(); }
 
+void PPU::step() {
+    cycle_++;
+    if (cycle_ > 340) {
+        cycle_ = 0;
+        scanline_++;
+        if (scanline_ == 240) render_scanline();
+        if (scanline_ > 260) { scanline_ = -1; sprite_zero_hit_ = false; sprite_overflow_ = false; }
+    }
+
+    if (scanline_ >= 0 && scanline_ < 240) {
+        if (cycle_ == 1) evaluate_sprites();
+        if (cycle_ >= 1 && cycle_ <= 256) {
+            fetch_background();
+            render_pixel(cycle_ - 1);
+        }
+        if (cycle_ == 257) sprite_count_ = 0;
+    }
+
+    if (scanline_ == 241 && cycle_ == 1) {
+        ppustatus_ |= 0x80;
+        if (ppuctrl_ & 0x80) nmi_pending_ = true;
+    }
+    if (scanline_ == -1 && cycle_ == 1) ppustatus_ &= ~0x80;
+}
+
+void PPU::evaluate_sprites() {
+    sprite_count_ = 0;
+    oam_addr_secondary_ = 0;
+    for (int i = 0; i < 64 && sprite_count_ < 8; ++i) {
+        uint8_t y = oam_[i * 4];
+        if (scanline_ >= y && scanline_ < y + 8) {
+            for (int j = 0; j < 4; ++j) {
+                secondary_oam_[oam_addr_secondary_++] = oam_[i * 4 + j];
+            }
+            sprite_count_++;
+            if (i == 0) sprite_zero_hit_ = true;
+        }
+    }
+    if (sprite_count_ >= 8) sprite_overflow_ = true;
+}
+
+void PPU::fetch_background() {
+    int x = cycle_ - 1 + scroll_x_;
+    int y = scanline_ + scroll_y_;
+    int tile_x = x / 8, tile_y = y / 8;
+    int nt_index = (tile_y % 30) * 32 + (tile_x % 32);
+    uint8_t tile_id = vram_[mirror_vram_addr(nametable_base_ + nt_index)];
+    int attr_index = nametable_base_ + 0x03C0 + ((tile_y / 4) * 8) + (tile_x / 4);
+    uint8_t attr = vram_[mirror_vram_addr(attr_index)];
+    int shift = ((tile_y & 2) ? 4 : 0) + ((tile_x & 2) ? 2 : 0);
+    uint8_t pal_sel = (attr >> shift) & 3;
+    uint16_t tile_addr = (ppuctrl_ & 0x10 ? 0x1000 : 0) + tile_id * 16 + (y % 8);
+    uint8_t p0 = read_chr(tile_addr), p1 = read_chr(tile_addr + 8);
+    int bit = ((p0 >> (7 - (x % 8))) & 1) | (((p1 >> (7 - (x % 8))) & 1) << 1);
+    scanline_pixels_[cycle_ - 1] = bit;
+    scanline_palettes_[cycle_ - 1] = pal_sel;
+}
+
+void PPU::render_pixel(int x) {
+    uint8_t bg_pixel = show_bg_ && (!bg_left_clip_ || x >= 8) ? scanline_pixels_[x] : 0;
+    uint8_t bg_pal = show_bg_ ? scanline_palettes_[x] : 0;
+    uint8_t sp_pixel = 0, sp_pal = 0;
+    bool sp_priority = false;
+
+    if (show_sprites_ && (!sprite_left_clip_ || x >= 8)) {
+        for (int i = 0; i < sprite_count_; ++i) {
+            int sx = secondary_oam_[i * 4 + 3];
+            if (x >= sx && x < sx + 8) {
+                int col = x - sx;
+                uint8_t attr = secondary_oam_[i * 4 + 2];
+                bool flip_h = attr & 0x40;
+                int ry = scanline_ - secondary_oam_[i * 4];
+                if (attr & 0x80) ry = 7 - ry;
+                uint16_t tile_addr = (ppuctrl_ & 0x08 ? 0x1000 : 0) + secondary_oam_[i * 4 + 1] * 16 + ry;
+                uint8_t p0 = read_chr(tile_addr), p1 = read_chr(tile_addr + 8);
+                int bit = ((p0 >> (flip_h ? col : (7 - col))) & 1) | (((p1 >> (flip_h ? col : (7 - col))) & 1) << 1);
+                if (bit != 0) {
+                    sp_pixel = bit;
+                    sp_pal = (attr & 3) + 4;
+                    sp_priority = (attr & 0x20) != 0;
+                    break;
+                }
+            }
+        }
+    }
+
+    uint8_t pixel = bg_pixel, pal = bg_pal;
+    if (sp_pixel != 0 && (bg_pixel == 0 || !sp_priority)) {
+        pixel = sp_pixel;
+        pal = sp_pal;
+    }
+    uint8_t pal_idx = palette_[(pal << 2) + pixel] & 0x3F;
+    const auto& col = nes_palette_[pal_idx];
+    int dst = (scanline_ * 256 + x) * 3;
+    frame_buffer_[dst] = col[0];
+    frame_buffer_[dst + 1] = col[1];
+    frame_buffer_[dst + 2] = col[2];
+}
+
+void PPU::oam_dma(uint8_t page) {
+    uint16_t addr = page << 8;
+    for (int i = 0; i < 256; ++i) {
+        oam_[oamaddr_++] = read(addr + i);
+    }
+}
+
+void PPU::render_frame(std::vector<uint8_t>& rgb_pixels) const {
+    rgb_pixels = frame_buffer_;
+}
+
+void PPU::render_scanline() {
+    // Accumulate into frame_buffer_
+}
+
+std::string PPU::debug_info() const {
+    std::ostringstream oss;
+    oss << "Scanline: " << scanline_ << " Cycle: " << cycle_ << " Sprites: " << sprite_count_
+        << " Overflow: " << (sprite_overflow_ ? "Yes" : "No") << " Hit: " << (sprite_zero_hit_ ? "Yes" : "No");
+    return oss.str();
+}
+
 void PPU::render_pattern_table(int table_index, std::vector<uint8_t>& pixels) const {
     if (table_index < 0 || table_index > 1) throw std::out_of_range("pattern table index must be 0 or 1");
     const size_t table_size = 0x1000;
@@ -109,97 +238,6 @@ void PPU::render_pattern_table(int table_index, std::vector<uint8_t>& pixels) co
                 int py = tile_y + row;
                 pixels[py * 128 + px] = static_cast<uint8_t>(bit);
             }
-        }
-    }
-}
-
-void PPU::step() {
-    cycle_++;
-    if (cycle_ > 340) {
-        cycle_ = 0;
-        scanline_++;
-        if (scanline_ == 240) render_scanline(); // Render visible scanlines
-        if (scanline_ > 260) { scanline_ = -1; sprite_zero_hit_ = false; sprite_overflow_ = false; }
-    }
-
-    if (scanline_ >= 0 && scanline_ < 240) {
-        if (cycle_ >= 1 && cycle_ <= 256) fetch_background();
-        if (cycle_ == 257) fetch_sprites();
-        if (cycle_ >= 1 && cycle_ <= 256) render_pixel(cycle_ - 1, scanline_pixels_[cycle_ - 1], scanline_palettes_[cycle_ - 1], 0, 0, false); // Simplified
-    }
-
-    if (scanline_ == 241 && cycle_ == 1) {
-        ppustatus_ |= 0x80;
-        if (ppuctrl_ & 0x80) nmi_pending_ = true;
-    }
-    if (scanline_ == -1 && cycle_ == 1) ppustatus_ &= ~0x80;
-}
-
-void PPU::fetch_background() {
-    // Simplified: Fetch tile and attribute for current position
-    int x = cycle_ - 1 + scroll_x_;
-    int y = scanline_ + scroll_y_;
-    int tile_x = x / 8, tile_y = y / 8;
-    int nt_index = (tile_y % 30) * 32 + (tile_x % 32);
-    uint8_t tile_id = vram_[mirror_vram_addr(nametable_base_ + nt_index)];
-    int attr_index = nametable_base_ + 0x03C0 + ((tile_y / 4) * 8) + (tile_x / 4);
-    uint8_t attr = vram_[mirror_vram_addr(attr_index)];
-    int shift = ((tile_y & 2) ? 4 : 0) + ((tile_x & 2) ? 2 : 0);
-    uint8_t pal_sel = (attr >> shift) & 3;
-    uint16_t tile_addr = (ppuctrl_ & 0x10 ? 0x1000 : 0) + tile_id * 16 + (y % 8);
-    uint8_t p0 = read_chr(tile_addr), p1 = read_chr(tile_addr + 8);
-    int bit = ((p0 >> (7 - (x % 8))) & 1) | (((p1 >> (7 - (x % 8))) & 1) << 1);
-    scanline_pixels_[cycle_ - 1] = bit;
-    scanline_palettes_[cycle_ - 1] = pal_sel;
-}
-
-void PPU::fetch_sprites() {
-    sprite_buffer_.clear();
-    for (int i = 0; i < 64; ++i) {
-        uint8_t y = oam_[i*4];
-        if (scanline_ >= y && scanline_ < y + 8) {
-            if (sprite_buffer_.size() < 8) {
-                sprite_buffer_.push_back({oam_[i*4], oam_[i*4+1], oam_[i*4+2], oam_[i*4+3]});
-            } else {
-                sprite_overflow_ = true;
-            }
-        }
-    }
-}
-
-void PPU::render_pixel(int x, uint8_t bg_pixel, uint8_t bg_pal, uint8_t sp_pixel, uint8_t sp_pal, bool sp_priority) {
-    uint8_t pixel = bg_pixel, pal = bg_pal;
-    for (const auto& sprite : sprite_buffer_) {
-        int sx = sprite[3];
-        if (x >= sx && x < sx + 8) {
-            int col = x - sx;
-            uint16_t tile_addr = (ppuctrl_ & 0x08 ? 0x1000 : 0) + sprite[1] * 16 + (scanline_ - sprite[0]);
-            uint8_t p0 = read_chr(tile_addr), p1 = read_chr(tile_addr + 8);
-            int bit = ((p0 >> (7 - col)) & 1) | (((p1 >> (7 - col)) & 1) << 1);
-            if (bit != 0) {
-                if (bg_pixel == 0 || !(sprite[2] & 0x20)) { // Priority
-                    pixel = bit; pal = (sprite[2] & 3) + 4;
-                    if (i == 0 && bg_pixel != 0) sprite_zero_hit_ = true;
-                }
-            }
-        }
-    }
-    // Store in frame buffer (for Vulkan or export)
-}
-
-void PPU::render_scanline() {
-    // Accumulate scanline into full frame
-}
-
-void PPU::render_frame(std::vector<uint8_t>& rgb_pixels) const {
-    // Simplified: Render all at once for export
-    rgb_pixels.assign(256 * 240 * 3, 0);
-    for (int y = 0; y < 240; ++y) {
-        for (int x = 0; x < 256; ++x) {
-            uint8_t pal_idx = palette_[0] & 0x3F; // Default
-            const auto& col = nes_palette_[pal_idx];
-            int dst = (y * 256 + x) * 3;
-            rgb_pixels[dst] = col[0]; rgb_pixels[dst+1] = col[1]; rgb_pixels[dst+2] = col[2];
         }
     }
 }

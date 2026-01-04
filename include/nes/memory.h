@@ -1,21 +1,22 @@
 #pragma once
-#include "nes/rom.h"
-#include "nes/visual.h"
-#include "nes/audio.h"
+#include "nes/rom.h"     // Ensure this file exists and defines ROM
+#include "nes/visual.h"  // Includes PPU class
+#include "nes/audio.h"   // Includes APU class
 #include <cstdint>
 #include <array>
 
 namespace nes {
-class MemoryMap {
+class Memory {
 public:
-    MemoryMap(const RomLoader* rom, VisualProcessor* visual, AudioProcessor* audio);
-    uint8_t fetch(uint16_t address) const;
-    void store(uint16_t address, uint8_t value);
+    Memory(const ROM* rom, PPU* ppu, APU* apu);
+    uint8_t read(uint16_t addr) const;
+    void write(uint16_t addr, uint8_t value);
+    void oam_dma(uint8_t page);
 
 private:
-    std::array<uint8_t, 0x0800> internal_ram_;
-    const RomLoader* rom_;
-    VisualProcessor* visual_;
-    AudioProcessor* audio_;
+    std::array<uint8_t, 0x0800> ram_;
+    const ROM* rom_;
+    PPU* ppu_;
+    APU* apu_;
 };
 }

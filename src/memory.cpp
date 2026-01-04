@@ -29,4 +29,11 @@ void MemoryMap::store(uint16_t address, uint8_t value) {
         if (address == 0x4016) {} // input latch stub
         else audio_->write_port(address, value);
     }
+    else if (address == 0x4014) {
+        oam_dma(value); // Trigger OAM DMA
+    }
+}
+
+void MemoryMap::oam_dma(uint8_t page) {
+    ppu_->oam_dma(page);
 }

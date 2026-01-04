@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <vector>
 #include <array>
+#include <string>
 
 namespace nes {
 class CPU6502;
@@ -10,6 +11,14 @@ class CPU6502;
 class PPU {
 public:
     explicit PPU(const ROM* rom, CPU6502* cpu);
+    uint8_t read_register(uint8_t reg);
+    void write_register(uint8_t reg, uint8_t value);
+    void step();
+    bool nmi_triggered() const { return nmi_pending_; }
+    void render_frame(std::vector<uint8_t>& rgb_pixels) const;
+    void render_scanline();
+    void oam_dma(uint8_t page);
+    std::string debug_info() const;
 
     // Read CHR memory (0x0000 - 0x1FFF)
     uint8_t read_chr(uint16_t addr) const;
@@ -25,18 +34,12 @@ public:
 
     // Render helpers
     void render_pattern_table(int table_index, std::vector<uint8_t>& pixels) const; // 128x128 2-bit pixels
-    void render_frame(std::vector<uint8_t>& rgb_pixels) const; // full 256x240 RGB (3 bytes per pixel)
 
     size_t chr_size() const noexcept;
 
-    uint8_t read_register(uint8_t reg);
-    void write_register(uint8_t reg, uint8_t value);
-    void step();
-    bool nmi_triggered() const;
-    void render_scanline(); // For real-time rendering
-
 private:
     const ROM* rom_;                 // not owned
+    CPU6502* cpu_;
     std::vector<uint8_t> chr_ram_;   // used if ROM has no CHR ROM
     bool has_chr_rom_;
 
@@ -52,19 +55,33 @@ private:
     uint8_t fine_x_;
     bool write_toggle_;
 
-    // New: Scrolling and rendering state
+    // Scrolling and rendering state
+    int scanline_, cycle_;
+    uint8_t scroll_x_, scroll_y_;
+    uint16_t nametable_base_;
+    bool nmi_pending_;
     uint16_t coarse_x_, coarse_y_, fine_y_;
-    bool sprite_zero_hit_, sprite_overflow_;
+    bool sprite_overflow_, sprite_zero_hit_;
     std::array<uint8_t, 256> scanline_pixels_; // For scanline rendering
     std::array<uint8_t, 256> scanline_palettes_;
     std::vector<std::array<uint8_t, 4>> sprite_buffer_; // Up to 8 sprites per scanline
 
+    // Sprite evaluation
+    std::array<uint8_t, 0x100> secondary_oam_; // 32 sprites * 4 bytes
+    int sprite_count_;
+    uint8_t oam_addr_secondary_;
+
+    // Masking
+    bool show_bg_, show_sprites_, bg_left_clip_, sprite_left_clip_;
+
+    // Performance
+    mutable std::vector<uint8_t> frame_buffer_;  // Mutable for const render_frame
+
     static const std::array<std::array<uint8_t,3>, 64> nes_palette_;
     uint16_t mirror_vram_addr(uint16_t addr) const;
-
+    void evaluate_sprites();
     void fetch_background();
-    void fetch_sprites();
-    void render_pixel(int x, uint8_t bg_pixel, uint8_t bg_pal, uint8_t sp_pixel, uint8_t sp_pal, bool sp_priority);
+    void render_pixel(int x);
 };
 
 }
