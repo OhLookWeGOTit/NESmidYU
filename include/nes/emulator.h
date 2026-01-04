@@ -2,6 +2,7 @@
 #include "nes/rom.h"
 #include "nes/memory.h"
 #include "nes/cpu.h"
+#include "nes/ppu.h"
 #include <memory>
 #include <vector>
 
@@ -14,10 +15,14 @@ public:
     void reset();
     int step();
     CPU6502& cpu();
+    PPU& ppu();
 
 private:
     std::unique_ptr<ROM> rom_;
     std::unique_ptr<Memory> mem_;
     std::unique_ptr<CPU6502> cpu_;
+    std::unique_ptr<PPU> ppu_;
 };
+
+}
 
