@@ -1,19 +1,21 @@
 #pragma once
 #include "nes/rom.h"
+#include "nes/visual.h"
+#include "nes/audio.h"
 #include <cstdint>
 #include <array>
 
 namespace nes {
-
-class Memory {
+class MemoryMap {
 public:
-    explicit Memory(const ROM* rom);
-    uint8_t read(uint16_t addr) const;
-    void write(uint16_t addr, uint8_t value);
+    MemoryMap(const RomLoader* rom, VisualProcessor* visual, AudioProcessor* audio);
+    uint8_t fetch(uint16_t address) const;
+    void store(uint16_t address, uint8_t value);
 
 private:
-    std::array<uint8_t, 0x0800> ram_;
-    const ROM* rom_;
+    std::array<uint8_t, 0x0800> internal_ram_;
+    const RomLoader* rom_;
+    VisualProcessor* visual_;
+    AudioProcessor* audio_;
 };
-
 }

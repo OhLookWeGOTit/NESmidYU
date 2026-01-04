@@ -1,27 +1,32 @@
 #include "nes/memory.h"
 using namespace nes;
 
-Memory::Memory(const ROM* rom) : ram_{}, rom_(rom) {}
+MemoryMap::MemoryMap(const RomLoader* rom, VisualProcessor* visual, AudioProcessor* audio)
+    : internal_ram_{}, rom_(rom), visual_(visual), audio_(audio) {}
 
-uint8_t Memory::read(uint16_t addr) const {
-    if (addr <= 0x1FFF) {
-        return ram_[addr & 0x07FF];
+uint8_t MemoryMap::fetch(uint16_t address) const {
+    address &= 0xFFFF;
+    if (address < 0x2000) return internal_ram_[address & 0x07FF];
+    if (address < 0x4000) return visual_->read_port((address - 0x2000) & 0x07);
+    if (address < 0x4020) {
+        if (address == 0x4016 || address == 0x4017) return 0; // input stub
+        return audio_->read_port(address);
     }
-    if (addr >= 0x8000) {
-        const auto& prg = rom_->prg();
-        if (prg.size() == 0x4000) {
-            size_t base = (addr - 0x8000) % 0x4000;
-            return prg[base];
-        } else if (!prg.empty()) {
-            size_t base = addr - 0x8000;
-            if (base < prg.size()) return prg[base];
-        }
+    if (address >= 0x8000) {
+        const auto& prog = rom_->get_program();
+        if (prog.size() == 0x4000) return prog[address & 0x3FFF];
+        return prog[address - 0x8000];
     }
     return 0;
 }
 
-void Memory::write(uint16_t addr, uint8_t value) {
-    if (addr <= 0x1FFF) {
-        ram_[addr & 0x07FF] = value;
+void MemoryMap::store(uint16_t address, uint8_t value) {
+    address &= 0xFFFF;
+    value &= 0xFF;
+    if (address < 0x2000) internal_ram_[address & 0x07FF] = value;
+    else if (address < 0x4000) visual_->write_port((address - 0x2000) & 0x07, value);
+    else if (address < 0x4020) {
+        if (address == 0x4016) {} // input latch stub
+        else audio_->write_port(address, value);
     }
 }

@@ -36,8 +36,17 @@ private:
     // PPU internal memory
     std::array<uint8_t, 0x800> vram_;     // nametables + attribute table area
     std::array<uint8_t, 0x20> palette_;   // 32 bytes palette RAM
+    std::array<uint8_t, 0x100> oam_;      // sprite OAM
+    uint8_t mirroring_;                 // 0=horizontal, 1=vertical
+
+    // Registers
+    uint8_t ppuctrl_, ppumask_, ppustatus_, oamaddr_, ppuscroll_, ppuaddr_, ppudata_;
+    uint16_t vram_addr_, temp_addr_;
+    uint8_t fine_x_;
+    bool write_toggle_;
 
     static const std::array<std::array<uint8_t,3>, 64> nes_palette_;
+    uint16_t mirror_vram_addr(uint16_t addr) const;
 };
 
 }
