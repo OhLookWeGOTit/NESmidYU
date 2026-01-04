@@ -2,7 +2,6 @@
 #include "nes/rom.h"
 #include <cstdint>
 #include <vector>
-#include <array>
 
 namespace nes {
 
@@ -18,7 +17,6 @@ public:
 
     // Render a pattern table (0 or 1) into a 128x128 pixel buffer
     // Each pixel is a 0..3 value (2-bit output combining two bitplanes)
-    // Pixels will be resized to 128*128 if needed.
     void render_pattern_table(int table_index, std::vector<uint8_t>& pixels) const;
 
     // Get CHR size in bytes (0 if no CHR ROM)
