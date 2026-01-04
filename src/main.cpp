@@ -25,22 +25,32 @@ int main(int argc, char** argv) {
         return 3;
     }
     emu.reset();
-    std::cout << "Loaded ROM. Exporting pattern tables...\n";
+    std::cout << "Loaded ROM. Exporting pattern tables and frame...\n";
 
-    // Export pattern table 0 and 1 as 128x128 PGM images (values 0..3 -> scaled to 0..255)
+    // Export pattern tables
     for (int tbl = 0; tbl < 2; ++tbl) {
         std::vector<uint8_t> pixels;
         emu.ppu().render_pattern_table(tbl, pixels);
         std::string fname = "pattern" + std::to_string(tbl) + ".pgm";
         std::ofstream ofs(fname, std::ios::binary);
-        if (!ofs) {
-            std::cerr << "Failed to open " << fname << " for writing\n";
-            continue;
-        }
+        if (!ofs) { std::cerr << "Failed to open " << fname << "\n"; continue; }
         ofs << "P5\n128 128\n255\n";
         for (auto v : pixels) ofs.put(static_cast<char>(v * 85)); // 0..3 -> 0,85,170,255
         ofs.close();
         std::cout << "Wrote " << fname << "\n";
+    }
+
+    // Export full 256x240 frame (PPM P6)
+    std::vector<uint8_t> frame;
+    emu.ppu().render_frame(frame);
+    std::ofstream ofs("frame.ppm", std::ios::binary);
+    if (ofs) {
+        ofs << "P6\n256 240\n255\n";
+        ofs.write(reinterpret_cast<const char*>(frame.data()), static_cast<std::streamsize>(frame.size()));
+        ofs.close();
+        std::cout << "Wrote frame.ppm\n";
+    } else {
+        std::cerr << "Failed to write frame.ppm\n";
     }
 
     std::cout << "Stepping up to " << steps << " steps\n";
